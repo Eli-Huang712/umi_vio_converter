@@ -19,6 +19,7 @@ ROS overlays are sourced and python-mcap is present before this runs.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -52,6 +53,14 @@ def parse_args():
     p.add_argument("--force", action="store_true", help="Force FULL even if with_pose exists (overwrites VIO!).")
     p.add_argument("--allow-experimental-head", action="store_true",
                    help="Permit head as a VIO pose sensor (unvalidated; default refused).")
+    p.add_argument("--build-parallel", dest="build_parallel", action="store_true", default=True,
+                   help="Run the per-sensor build_maps concurrently (default). Each gets its own "
+                        "ROS domain (base+i); space per-episode base domains by >= #sensors.")
+    p.add_argument("--build-sequential", dest="build_parallel", action="store_false",
+                   help="Run the per-sensor build_maps one at a time (the original behaviour).")
+    p.add_argument("--wrist-gpus", default=None,
+                   help="Comma list of GPU ids to pin concurrent sensors to (standalone use), "
+                        "e.g. '0,1'. Default: inherit CUDA_VISIBLE_DEVICES (sensors share it).")
     p.set_defaults(tcp_transform=True)
     return p.parse_args()
 
@@ -120,13 +129,47 @@ def do_full(args, wp: Path, pose_sensors):
         )
 
     # _build_map_one_sensor.sh: <mcap> <sensor> [ros_domain_id] [play_rate].
-    # Always pass slot 3 (domain, "" = default) so play_rate lands in slot 4.
-    domain = args.ros_domain_id if args.ros_domain_id is not None else ""
-    for sensor in pose_sensors:
+    # Sequential (default): each sensor reuses the same domain, run one at a time.
+    # Parallel: sensors run concurrently, so each needs its OWN ROS domain (else
+    # their /clock + /camera/... topics collide). Sensor i -> base_domain + i.
+    #   Caller must space per-episode base domains by >= len(pose_sensors) to
+    #   avoid cross-episode collisions (e.g. batch stride 2 for the two wrists).
+    #   Domains must stay <= 232 (FastDDS cap): base + max_slot*stride + i <= 232.
+    base_domain = args.ros_domain_id
+    if args.build_parallel and base_domain is None:
+        base_domain = "90"  # need a base to derive distinct per-sensor domains
+
+    def wrist_cmd(i, sensor):
+        domain = str(int(base_domain) + i) if base_domain is not None else ""
         cmd = ["bash", ONE_SENSOR_SH, args.input_mcap, sensor, domain]
         if args.play_rate is not None:
             cmd += [args.play_rate]
-        run(cmd, cwd=REPO_DIR)
+        return cmd
+
+    def wrist_env(i):
+        # Optionally pin each concurrent sensor to its own GPU (standalone use);
+        # under the batch driver CUDA_VISIBLE_DEVICES is already one GPU and both
+        # sensors share it, which is fine.
+        if not args.wrist_gpus:
+            return None
+        gpus = [g.strip() for g in args.wrist_gpus.split(",") if g.strip()]
+        env = dict(os.environ)
+        env["CUDA_VISIBLE_DEVICES"] = gpus[i % len(gpus)]
+        return env
+
+    if args.build_parallel and len(pose_sensors) > 1:
+        procs = []
+        for i, sensor in enumerate(pose_sensors):
+            cmd = wrist_cmd(i, sensor)
+            print("+ (parallel) " + " ".join(str(c) for c in cmd), flush=True)
+            procs.append((sensor, subprocess.Popen(
+                [str(c) for c in cmd], cwd=REPO_DIR, env=wrist_env(i))))
+        failed = [s for s, p in procs if p.wait() != 0]
+        if failed:
+            raise SystemExit(f"build_map failed for: {', '.join(failed)}")
+    else:
+        for i, sensor in enumerate(pose_sensors):
+            run(wrist_cmd(i, sensor), cwd=REPO_DIR, env=wrist_env(i))
 
     merge_cmd = [sys.executable, MERGE_PY, "--input_mcap", args.input_mcap,
                  "--pose-sensors", ",".join(pose_sensors)]

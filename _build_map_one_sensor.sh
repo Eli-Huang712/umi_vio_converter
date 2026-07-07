@@ -24,6 +24,16 @@ sensor_name="$2"
 ros_domain_id="${3:-${ROS_DOMAIN_ID:-}}"
 play_rate="${4:-${UMI_BUILD_MAP_PLAY_RATE:-20}}"
 repo_dir="${5:-/tinynav}"
+# Head-start delay before build_map starts polling perception. build_map's
+# wait_for_perception_subscribers() already blocks until perception has
+# subscribed, so this is just a boot cushion, not a correctness requirement.
+# Default 1s (was a fixed 5s); override via env if a node is slow to come up.
+perception_warmup="${UMI_PERCEPTION_WARMUP_SEC:-1}"
+# Watchdog: build_map's wait_for_perception_subscribers() has NO timeout, so a
+# crashed perception (e.g. bad env, missing model) makes build_map spin forever
+# and pin a GPU. Cap the whole build_map call; 0 disables. A normal episode is
+# ~38s, so 300s is generous headroom while still bounding a hang.
+build_timeout="${UMI_BUILD_MAP_TIMEOUT_SEC:-300}"
 
 if [[ "${input_mcap}" != *.mcap ]]; then
   echo "input must be an .mcap file: ${input_mcap}" >&2
@@ -100,13 +110,23 @@ pr="$(shell_quote "${play_rate}")"
 sn="$(shell_quote "${sensor_name}")"
 pl="$(shell_quote "${perception_log}")"
 bl="$(shell_quote "${build_log}")"
+ws="$(shell_quote "${perception_warmup}")"
+to="$(shell_quote "${build_timeout}")"
+# Wrap build_map in `timeout` unless disabled (0). SIGTERM at the deadline, then
+# SIGKILL 10s later. Exit 124 (timeout) is surfaced as a failure via status file.
+if [[ "${build_timeout}" == "0" ]]; then
+  build_wrap=""
+else
+  build_wrap="timeout -k 10 ${to}"
+fi
+bw="${build_wrap}"
 
 tmux new-session -d -s "${session_name}" -n "${sensor_name}" \
   "${ros_setup}; cd ${rq} && python3 tinynav/core/perception_node.py > ${pl} 2>&1"
 
 tmux split-window -t "${session_name}:0" -h \
-  "${ros_setup}; cd ${rq} && sleep 5; set +e
-   python3 tinynav/core/build_map_node.py --bag_file ${iq} --sensor ${sn} --map_save_path ${mq} --play_rate ${pr} --no_verbose_timer > ${bl} 2>&1
+  "${ros_setup}; cd ${rq} && sleep ${ws}; set +e
+   ${bw} python3 tinynav/core/build_map_node.py --bag_file ${iq} --sensor ${sn} --map_save_path ${mq} --play_rate ${pr} --no_verbose_timer > ${bl} 2>&1
    status=\$?; echo \$status > ${sf}
    tmux wait-for -S ${ds}
    exit \$status"
