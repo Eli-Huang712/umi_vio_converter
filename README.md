@@ -5,6 +5,8 @@
 
 设计细节见 [DESIGN.md](DESIGN.md)。
 
+> **日常操作请看 [使用指南.md](使用指南.md)**（部署/单集/批量/验证/排错）；速度数据见 [BENCHMARK.md](BENCHMARK.md)。
+
 ## 做了什么（三处外科改动 + 新工具）
 - `patched/flatbuffer_codec.py` — 新增 `decode_tactile()` → `sensor_msgs/PointCloud2`
   （6×float32 `x,y,z,fx,fy,fz`，`width=25`，点字节零重排直拷）+ `vector_struct_bytes` 助手。
