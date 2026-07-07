@@ -1,4 +1,10 @@
-# Phase 2 — persistent VIO worker (design)
+# Phase 2 — persistent VIO worker (design + SHELVED with findings)
+
+> **Status (2026-07-08): SHELVED — not shipped.** The persistent worker is
+> implemented and functional (`persistent_worker.py` / `.sh`) but **does not pass
+> the correctness gate**, and the ceiling is far lower than hoped. Two
+> independent, empirically-established reasons — see **Outcome** at the bottom.
+> Phase 1 (parallel wrists, committed `c88c6ea`) stands and is the shipped win.
 
 ## Goal
 Raise the FULL-conversion **throughput ceiling** by eliminating the per-episode
@@ -78,4 +84,51 @@ pairs get distinct domains at launch. Keep every domain ≤ 232 (FastDDS cap).
 - `umi_vio_converter.py` — add `--engine persistent` to route FULL through the
   worker instead of `_build_map_one_sensor.sh` (default stays the shell path
   until the gate passes).
+
+---
+
+## Outcome (2026-07-08) — why this is shelved
+
+Implemented in full and driven through the gate (`persistent [E1,E2,E1]` vs
+fresh-process baselines, on the plant_collection dataset). Two blockers, each
+sufficient on its own:
+
+**1. The reward is only ~15–18%, not ~2×.** Measured breakdown of a 77 s episode:
+2×38.5 s build_map (the two wrists, sequential) whose *actual mapping compute is
+~1.6 s*; the ~37 s/build_map is ~15 s irreducible per-frame perception + ~20 s
+fixed overhead. But most of that "overhead" is per-frame perception and CUDA/ROS
+init that a persistent process still pays — only model *load* (~5 s) and process
+spawn are truly amortizable. Persistent E1 ran 62 s vs 77 s baseline = ~18 %. The
+profiling was right: **per-frame perception dominates, so amortizing startup caps
+the gain at ~15–18 %.**
+
+**2. Correctness cannot be guaranteed.** Two empirical findings:
+   - **The baseline VIO is not bit-reproducible.** Three identical fresh-process
+     runs of the same episode gave three different right_wrist `poses.npy` (hashes
+     `eb46939d` / `10fd2263` / `c411f5bf`, keyframe count 37/37/38). The pipeline
+     is timing-sensitive: paced BagPlayer + async MultiThreadedExecutor perception
+     → `ApproximateTimeSynchronizer` pairs stereo/imu frames differently under
+     scheduling jitter. So a **bit-identical gate is impossible** and a tolerance
+     gate would have to accept keyframe-count changes — i.e. genuinely different
+     maps — which defeats the point of a "no VIO change" guarantee.
+   - **The persistent worker leaks state across jobs anyway.** left_wrist is
+     perfectly reproducible fresh (39/39/39) yet drifted to 41 on the 3rd job of a
+     persistent run, and pose counts grow monotonically across jobs. Four
+     principled fixes did **not** remove it: (a) dedicated fd control channel,
+     (b) `rclpy.init/shutdown` per job (fresh DDS participant), (c) cache only the
+     read-only TRT engine with fresh context/buffers/graph per job, (d) clear the
+     three process-level `(a)lru_cache_numpy` memoizations (SuperPointTRT.infer,
+     LightGlueTRT.infer, math_utils.estimate_pose) between jobs. The residual leak
+     lives in native/C++ state (gtsam / CUDA / TensorRT) not resettable from
+     Python without re-initialising it — which erases the amortization.
+
+**Conclusion.** A persistent worker on this pipeline is a ~15–18 % throughput gain
+bought with a real risk of silently corrupting VIO poses over a long run, on data
+where that corruption is invisible and expensive. Not worth it. The real
+throughput levers remain zero-risk and larger: **horizontal scaling** (H200-1 +
+H200-2 ≈ 2×) and **BACKFILL-not-FULL** for episodes that already have poses.
+
+The code is kept on this branch for reference (functional, just not
+correctness-safe); it is **not** wired into `umi_vio_converter.py` and the default
+FULL path is unchanged.
 - No edits to tinynav `perception_node.py` / `build_map_node.py` / `models_trt.py`.

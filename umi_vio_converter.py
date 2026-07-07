@@ -53,11 +53,13 @@ def parse_args():
     p.add_argument("--force", action="store_true", help="Force FULL even if with_pose exists (overwrites VIO!).")
     p.add_argument("--allow-experimental-head", action="store_true",
                    help="Permit head as a VIO pose sensor (unvalidated; default refused).")
-    p.add_argument("--build-parallel", dest="build_parallel", action="store_true", default=True,
-                   help="Run the per-sensor build_maps concurrently (default). Each gets its own "
-                        "ROS domain (base+i); space per-episode base domains by >= #sensors.")
+    p.add_argument("--build-parallel", dest="build_parallel", action="store_true", default=False,
+                   help="Run the per-sensor build_maps concurrently (opt-in; ~2x latency). Each gets "
+                        "its own ROS domain (base+i), so the CALLER must space per-episode base domains "
+                        "by >= #sensors (the stock batch driver uses stride 1 and would collide — keep "
+                        "the default sequential there). Best for standalone/latency use.")
     p.add_argument("--build-sequential", dest="build_parallel", action="store_false",
-                   help="Run the per-sensor build_maps one at a time (the original behaviour).")
+                   help="Run the per-sensor build_maps one at a time (default; batch-driver safe).")
     p.add_argument("--wrist-gpus", default=None,
                    help="Comma list of GPU ids to pin concurrent sensors to (standalone use), "
                         "e.g. '0,1'. Default: inherit CUDA_VISIBLE_DEVICES (sensors share it).")
