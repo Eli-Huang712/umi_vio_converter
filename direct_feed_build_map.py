@@ -26,6 +26,7 @@ import argparse
 import bisect
 import json
 import logging
+import threading
 import time
 
 import numpy as np
@@ -75,6 +76,24 @@ def rotate_imu_inplace(imu_msg):
     return imu_msg
 
 
+def _nearest_right(right_stamps, lt, slop_ns):
+    """Index of the right frame nearest to left stamp ``lt`` within ``slop_ns``, else None.
+
+    Shared by the batch (``pair_stereo``) and streaming decoders so both produce
+    IDENTICAL pairings. ``right_stamps`` must be sorted ascending (bag = time order).
+    """
+    j = bisect.bisect_left(right_stamps, lt)
+    best_ri, best_d = None, None
+    for ri in (j - 1, j):
+        if 0 <= ri < len(right_stamps):
+            d = abs(right_stamps[ri] - lt)
+            if best_d is None or d < best_d:
+                best_ri, best_d = ri, d
+    if best_ri is not None and best_d <= slop_ns:
+        return best_ri
+    return None
+
+
 def pair_stereo(left_stamps, right_stamps, slop_s=_STEREO_SLOP_S):
     """Pair each left frame with the nearest right frame within ``slop`` seconds.
 
@@ -86,15 +105,9 @@ def pair_stereo(left_stamps, right_stamps, slop_s=_STEREO_SLOP_S):
     slop_ns = slop_s * 1e9
     pairs = []
     for li, lt in enumerate(left_stamps):
-        j = bisect.bisect_left(right_stamps, lt)
-        best_ri, best_d = None, None
-        for ri in (j - 1, j):
-            if 0 <= ri < len(right_stamps):
-                d = abs(right_stamps[ri] - lt)
-                if best_d is None or d < best_d:
-                    best_ri, best_d = ri, d
-        if best_ri is not None and best_d <= slop_ns:
-            pairs.append((li, best_ri))
+        ri = _nearest_right(right_stamps, lt, slop_ns)
+        if ri is not None:
+            pairs.append((li, ri))
     return pairs
 
 
@@ -239,6 +252,157 @@ def read_episode(bag_path, sensor):
     right_frames.sort(key=lambda e: e[0])
     imu_events.sort(key=lambda e: e[0])
     return left_frames, right_frames, imu_events, cam_info_right, cam_info_left
+
+
+class StreamingDecoder:
+    """Pipeline-decode producer: a background thread decodes video+IMU incrementally
+    while the main thread runs VIO, so the GPU is fed during decode instead of after
+    a serial upfront decode (that upfront phase was ~53% of single-process CPU with
+    the GPU idle — see profiling/results/df_stage2_evidence.md).
+
+    Correctness: pushes frames into growing sorted-by-arrival lists (bag = time order)
+    and lets the consumer wait until the relevant region is decoded before pairing /
+    IMU-feeding. The pairing (``_nearest_right``) and IMU lookahead run on exactly the
+    same prefixes the batch path would see, so output is BIT-IDENTICAL to read_episode.
+    PyAV H.264 decode + cv2 release the GIL, so the producer runs truly parallel to the
+    consumer's native TRT/gtsam work.
+    """
+
+    def __init__(self, bag_path, sensor):
+        self._bag_path = bag_path
+        self._sensor = sensor
+        self.left_frames = []   # (stamp_ns, mono, bgr)
+        self.right_frames = []  # (stamp_ns, mono)
+        self.imu_events = []    # (stamp_ns, Imu)
+        self.left_stamps = []
+        self.right_stamps = []
+        self.imu_stamps = []
+        self.ci_right = None
+        self.ci_left = None
+        self._ci_ready = False
+        self.done = False
+        self.error = None
+        self._cond = threading.Condition()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="df-decoder", daemon=True)
+        self._thread.start()
+        with self._cond:
+            while not self._ci_ready and self.error is None:
+                self._cond.wait()
+            if self.error is not None:
+                raise self.error
+        return self
+
+    def _run(self):
+        try:
+            import av
+            from mcap.reader import make_reader
+
+            from tool.umi.flatbuffer_codec import decode_compressed_video, decode_imu
+            from tool.umi.flatbuffer_reader import _build_camera_info
+
+            topics = _sensor_recorded_topics(self._sensor)
+            ci_right_topic = f"/robot/camera/{self._sensor}/right/camera_info"
+            ci_left_topic = f"/robot/camera/{self._sensor}/left/camera_info"
+            ci_right = ci_left = None
+            with open(self._bag_path, "rb") as f:
+                for rec in make_reader(f).iter_metadata():
+                    if rec.name != "camera_info":
+                        continue
+                    for value in rec.metadata.values():
+                        spec = json.loads(value)
+                        if spec.get("topic") == ci_right_topic:
+                            ci_right = _build_camera_info(spec)
+                        elif spec.get("topic") == ci_left_topic:
+                            ci_left = _build_camera_info(spec)
+            if ci_right is None:
+                raise RuntimeError(f"No camera_info for {ci_right_topic} in {self._bag_path}")
+            with self._cond:
+                self.ci_right, self.ci_left = ci_right, ci_left
+                self._ci_ready = True
+                self._cond.notify_all()
+
+            left_dec = av.CodecContext.create("h264", "r")
+            right_dec = av.CodecContext.create("h264", "r")
+
+            def _decode(dec, video_msg, want_bgr):
+                stamp_ns = int(video_msg.timestamp.sec) * 1_000_000_000 + int(video_msg.timestamp.nanosec)
+                out = []
+                try:
+                    for packet in dec.parse(bytes(video_msg.data)):
+                        for frame in dec.decode(packet):
+                            mono = np.ascontiguousarray(frame.to_ndarray(format="gray"))
+                            bgr = np.ascontiguousarray(frame.to_ndarray(format="bgr24")) if want_bgr else None
+                            out.append((stamp_ns, mono, bgr))
+                except av.error.FFmpegError as exc:
+                    logger.warning("video decode error on %s: %s", self._sensor, exc)
+                return out
+
+            with open(self._bag_path, "rb") as f:
+                for _schema, channel, message in make_reader(f).iter_messages():
+                    if channel.topic == topics["left_video"]:
+                        video_msg = decode_compressed_video(message.data)
+                        for stamp_ns, mono, bgr in _decode(left_dec, video_msg, want_bgr=True):
+                            with self._cond:
+                                self.left_frames.append((stamp_ns, mono, bgr))
+                                self.left_stamps.append(stamp_ns)
+                                self._cond.notify_all()
+                    elif channel.topic == topics["right_video"]:
+                        video_msg = decode_compressed_video(message.data)
+                        for stamp_ns, mono, _ in _decode(right_dec, video_msg, want_bgr=False):
+                            with self._cond:
+                                self.right_frames.append((stamp_ns, mono))
+                                self.right_stamps.append(stamp_ns)
+                                self._cond.notify_all()
+                    elif channel.topic == topics["imu"]:
+                        imu = rotate_imu_inplace(decode_imu(message.data))
+                        stamp_ns = int(imu.header.stamp.sec) * 1_000_000_000 + int(imu.header.stamp.nanosec)
+                        with self._cond:
+                            self.imu_events.append((stamp_ns, imu))
+                            self.imu_stamps.append(stamp_ns)
+                            self._cond.notify_all()
+        except Exception as exc:  # noqa: BLE001 — surface to consumer thread
+            with self._cond:
+                self.error = exc
+                self._cond.notify_all()
+        finally:
+            with self._cond:
+                self.done = True
+                self._cond.notify_all()
+
+    # -- consumer wait API (all under the shared condition) -----------------
+
+    def wait_left(self, li):
+        """Block until left frame ``li`` is decoded; return it, or None if exhausted."""
+        with self._cond:
+            while len(self.left_frames) <= li and not self.done and self.error is None:
+                self._cond.wait()
+            if self.error is not None:
+                raise self.error
+            return self.left_frames[li] if li < len(self.left_frames) else None
+
+    def snapshot_right_past(self, lt):
+        """Block until a right frame with ts > lt is decoded (or done); return a
+        stable snapshot (list, len) of right_stamps so pairing sees the same prefix
+        the batch path would (both candidates around lt are guaranteed present)."""
+        with self._cond:
+            while (not self.right_stamps or self.right_stamps[-1] <= lt) and not self.done and self.error is None:
+                self._cond.wait()
+            if self.error is not None:
+                raise self.error
+            return list(self.right_stamps)
+
+    def wait_imu_past(self, lt):
+        """Block until an IMU sample with ts > lt is decoded (or done)."""
+        with self._cond:
+            while (not self.imu_stamps or self.imu_stamps[-1] <= lt) and not self.done and self.error is None:
+                self._cond.wait()
+            if self.error is not None:
+                raise self.error
+
+
 def _stub_publishers(perception, build_map, keyframe_holder):
     """Redirect perception's keyframe outputs into an in-process holder, and turn
     every other publisher / TF broadcaster on both nodes into a no-op. The message
@@ -282,24 +446,45 @@ class _NullBroadcaster:
         pass
 
 
-def run_conversion(bag_path, sensor, map_save_path, verbose_timer=False):
-    """Single-process direct feed. Writes ``poses.npy`` etc. identically to stock."""
+def run_conversion(bag_path, sensor, map_save_path, verbose_timer=False, pipeline=True,
+                   manage_rclpy=True):
+    """Single-process direct feed. Writes ``poses.npy`` etc. identically to stock.
+
+    ``pipeline=True`` (default) overlaps decode with VIO via a background decoder
+    thread (StreamingDecoder) so the GPU is fed during decode; ``pipeline=False``
+    uses the original decode-all-upfront path. Both drive the SAME VIO closures
+    (``feed_imu_through`` + ``process_one_stereo``) over the SAME frame prefixes, so
+    they produce BIT-IDENTICAL poses — only the decode SCHEDULE differs.
+
+    ``manage_rclpy=True`` (default, standalone) calls rclpy.init()/shutdown() itself;
+    a persistent worker pool sets it False and owns the rclpy lifecycle across many
+    episodes (avoids the per-episode CUDA/rclpy shutdown hang; nodes are still fresh
+    per episode so no SLAM/intrinsics state leaks between episodes).
+    """
     import rclpy
 
     from tinynav.core.build_map_node import BuildMapNode
     from tinynav.core.perception_node import PerceptionNode
 
     t0 = time.perf_counter()
-    logger.info("decoding episode %s sensor=%s", bag_path, sensor)
-    left_frames, right_frames, imu_events, ci_right, ci_left = read_episode(bag_path, sensor)
-    left_stamps = [e[0] for e in left_frames]
-    right_stamps = [e[0] for e in right_frames]
-    pairs = pair_stereo(left_stamps, right_stamps)
-    logger.info("decoded L=%d R=%d IMU=%d -> %d stereo pairs in %.1fs",
-                len(left_frames), len(right_frames), len(imu_events), len(pairs),
-                time.perf_counter() - t0)
+    logger.info("converting episode %s sensor=%s (pipeline=%s)", bag_path, sensor, pipeline)
 
-    rclpy.init()
+    decoder = None
+    if pipeline:
+        # decode starts NOW in the background; model load below overlaps it.
+        decoder = StreamingDecoder(bag_path, sensor).start()
+        ci_right, ci_left = decoder.ci_right, decoder.ci_left
+    else:
+        left_frames, right_frames, imu_events, ci_right, ci_left = read_episode(bag_path, sensor)
+        left_stamps = [e[0] for e in left_frames]
+        right_stamps = [e[0] for e in right_frames]
+        pairs = pair_stereo(left_stamps, right_stamps)
+        logger.info("decoded L=%d R=%d IMU=%d -> %d pairs in %.1fs",
+                    len(left_frames), len(right_frames), len(imu_events), len(pairs),
+                    time.perf_counter() - t0)
+
+    if manage_rclpy:
+        rclpy.init()
     perception = PerceptionNode(verbose_timer=verbose_timer)
     build_map = BuildMapNode(map_save_path, verbose_timer=verbose_timer)
     keyframe_holder = {}
@@ -319,57 +504,67 @@ def run_conversion(bag_path, sensor, map_save_path, verbose_timer=False):
     # IMU is fed with a 1-STEP LOOK-AHEAD before each stereo frame. process() first
     # drains all IMU with ts <= current stereo stamp T, then runs a "specially
     # process the last imu" partial-integration step that needs the FIRST IMU with
-    # ts > T to be present in the deque. In the stock (async, 96 Hz IMU, ~127 ms/
-    # frame) path that straddling sample has always arrived by the time process()
-    # runs; feeding ts <= T only would starve that step and skew the trajectory
-    # (motion-dependent; seen as ~13 mm on dynamic wrists). So feed all ts <= T PLUS
-    # the first ts > T. imu_idx advances monotonically -> each sample fed exactly
-    # once, no gap, no double-count.
-    imu_idx = 0
-    n_imu = len(imu_events)
+    # ts > T present in the deque (else the trajectory skews, ~13 mm on dynamic
+    # wrists). imu_state["idx"] advances monotonically -> each sample fed once.
+    imu_state = {"idx": 0}
 
-    def feed_imu_through(target_ns):
-        nonlocal imu_idx
-        while imu_idx < n_imu and imu_events[imu_idx][0] <= target_ns:
-            perception._process_imu_msg(imu_events[imu_idx][1])
-            imu_idx += 1
-        if imu_idx < n_imu:  # 1-step look-ahead: the straddling sample (ts > T)
-            perception._process_imu_msg(imu_events[imu_idx][1])
-            imu_idx += 1
+    def feed_imu_through(imu_events, target_ns):
+        n = len(imu_events)
+        while imu_state["idx"] < n and imu_events[imu_state["idx"]][0] <= target_ns:
+            perception._process_imu_msg(imu_events[imu_state["idx"]][1])
+            imu_state["idx"] += 1
+        if imu_state["idx"] < n:  # 1-step look-ahead: the straddling sample (ts > T)
+            perception._process_imu_msg(imu_events[imu_state["idx"]][1])
+            imu_state["idx"] += 1
 
-    last_processed = 0.0
-    n_kf = 0
-    for (li, ri) in pairs:
-        ts_ns = left_frames[li][0]
+    stats = {"last_processed": 0.0, "n_kf": 0}
+
+    def process_one_stereo(ts_ns, left_mono, left_bgr, right_mono):
+        # feed_imu_through has already run for this frame (like the stock ordering);
+        # the throttle gates only the VIO process() call, not the IMU feed.
         ts_s = ts_ns * 1e-9
-        # feed IMU up to (and one past) this stereo stamp BEFORE processing it
-        feed_imu_through(ts_ns)
-        if ts_s - last_processed < _THROTTLE_S:
-            continue
-        last_processed = ts_s
-        _, left_mono, left_bgr = left_frames[li]
-        _, right_mono = right_frames[ri]
+        if ts_s - stats["last_processed"] < _THROTTLE_S:
+            return
+        stats["last_processed"] = ts_s
         header = _make_header(ts_ns, "camera")
         left_msg = _NpImage(left_mono, "mono8", header)
         right_msg = _NpImage(right_mono, "mono8", header)
-
         keyframe_holder.clear()
         loop.run_until_complete(perception.process(left_msg, right_msg))
-
-        # perception emitted a keyframe -> feed build_map synchronously with the
-        # left/odom/depth it published + the bgr8 from THIS decoded frame (same
-        # stamp the ApproximateTimeSynchronizer would have matched).
+        # perception emitted a keyframe -> feed build_map with left/odom/depth it
+        # published + the bgr8 from THIS decoded frame (same stamp the sync would pair).
         if "odom" in keyframe_holder:
             rgb_msg = _NpImage(left_bgr, "bgr8", _make_header(ts_ns, "camera"))
             build_map.keyframe_callback(
-                keyframe_holder["image"],
-                keyframe_holder["odom"],
-                keyframe_holder["depth"],
-                rgb_msg,
+                keyframe_holder["image"], keyframe_holder["odom"],
+                keyframe_holder["depth"], rgb_msg,
             )
-            n_kf += 1
+            stats["n_kf"] += 1
 
-    logger.info("processed %d keyframes; saving mapping", n_kf)
+    if pipeline:
+        slop_ns = _STEREO_SLOP_S * 1e9
+        li = 0
+        while True:
+            lf = decoder.wait_left(li)
+            if lf is None:
+                break
+            ts_ns = lf[0]
+            right_stamps = decoder.snapshot_right_past(ts_ns)   # ensures pairing decidable
+            ri = _nearest_right(right_stamps, ts_ns, slop_ns)
+            if ri is None:                                       # unpaired -> dropped (== batch)
+                li += 1
+                continue
+            decoder.wait_imu_past(ts_ns)                         # ensures lookahead sample present
+            feed_imu_through(decoder.imu_events, ts_ns)
+            process_one_stereo(ts_ns, lf[1], lf[2], decoder.right_frames[ri][1])
+            li += 1
+    else:
+        for (li, ri) in pairs:
+            ts_ns = left_frames[li][0]
+            feed_imu_through(imu_events, ts_ns)
+            process_one_stereo(ts_ns, left_frames[li][1], left_frames[li][2], right_frames[ri][1])
+
+    logger.info("processed %d keyframes; saving mapping", stats["n_kf"])
     build_map.save_mapping()
     logger.info("direct-feed done: %s (wall %.1fs)", map_save_path, time.perf_counter() - t0)
 
@@ -378,10 +573,13 @@ def run_conversion(bag_path, sensor, map_save_path, verbose_timer=False):
         build_map.destroy_node()
     except Exception:
         pass
-    rclpy.shutdown()
+    if manage_rclpy:
+        rclpy.shutdown()
 
 
 def main():
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bag_file", required=True)
     parser.add_argument("--sensor", required=True, choices=("left_wrist", "right_wrist"))
@@ -390,15 +588,19 @@ def main():
     # Accepted for CLI parity with build_map_node.py; direct feed does not pace.
     parser.add_argument("--play_rate", default=None)
     parser.add_argument("--no_verbose_timer", dest="verbose_timer", action="store_false")
-    parser.set_defaults(verbose_timer=False)
+    parser.add_argument("--no-pipeline", dest="pipeline", action="store_false",
+                        help="Decode the whole episode upfront instead of streaming (debug/fallback).")
+    parser.set_defaults(verbose_timer=False, pipeline=True)
     args = parser.parse_args()
+    # env override: UMI_PIPELINE=0 forces the batch path (orchestration fallback).
+    pipeline = args.pipeline and os.environ.get("UMI_PIPELINE", "1") != "0"
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(filename)s:%(lineno)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    run_conversion(args.bag_file, args.sensor, args.map_save_path, args.verbose_timer)
+    run_conversion(args.bag_file, args.sensor, args.map_save_path, args.verbose_timer, pipeline)
 
 
 if __name__ == "__main__":

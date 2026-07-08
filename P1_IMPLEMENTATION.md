@@ -221,6 +221,50 @@ UMI_DIRECT_FEED=1 CUDA_VISIBLE_DEVICES=0 bash /tinynav/tool/umi/_build_map_one_s
 # parity： bash prof_run_parity.sh <hash>
 ```
 
+## 6.5 P2：逼近上限（流水化解码 + MPS + 常驻池）——分支 `feature/p2-max-throughput`
+
+> 目标（用户）：启用 MPS + 尝试流水化解码 + 常驻池，把有效 util 推到 >80%，**保正确率、不浪费资源**。
+> 完整证据 `profiling/results/p2_sweep_evidence.md`。实测 h2、128 集池。
+
+### 结论（TL;DR）
+- **推荐生产配置 = 流水化解码 + MPS + 每集全新进程，PAR≈48**。实测节点 **1.95M 帧/时**
+  （稳态，+21% vs P1 的 1.61M，0 失败）；**单卡有效 GPU util 86%（MPS）/96%（无 MPS）**（10Hz 实测，>80% 达成）。
+- **常驻池：证伪，默认关闭**（见下）——不抬节点吞吐（节点已 GPU-bound）且**重新引入 native 跨集污染**，违反"保正确/不浪费"。
+
+### A. 流水化解码（`direct_feed_build_map.py`，`StreamingDecoder`）
+把"整段前置解码"改成后台解码线程 + 主线程 VIO 消费（PyAV/cv2 释放 GIL → 解码与 TRT/gtsam 真并行，GPU 持续被喂）。
+在线配对与批量共用 `_nearest_right`，保证逐位一致。
+- **正确性闸门 PASS**：流水 vs 批量（`--no-pipeline`）6/6 集×腕 **逐位一致**（maxabs=0）。
+- 默认开（`UMI_PIPELINE=1`）；`--no-pipeline` / `UMI_PIPELINE=0` 回退。
+
+### B. MPS（`prof_mps.sh` 起停，编排层，opt-in）
+无 VIO 改动。单卡 A/B +52%；全节点 +15%（1.61M→1.86M）。与流水叠加见下。
+
+### C. util 甜点扫描（`prof_util_sweep.sh` + `prof_effective_util.sh`）
+| 配置 | 峰值 PAR | 帧/时 | 单卡有效 GPU util(10Hz) | 失败 |
+|---|---|---|---|---|
+| P1（无流水无 MPS） | 64 | 1,612,520 | — | 0 |
+| MPS only | 64 | 1,861,200 | — | 0 |
+| **流水 + MPS** | **48** | **1,951,830** | **86%** | 0 |
+| 流水（无 MPS） | 64 | 1,856,550 | 96% | 0 |
+
+- **>80% util 达成**：单卡 10Hz `util.gpu` = 86%(MPS)/96%(无MPS)。节点 `dmon sm%`~55% 是**测量假象**
+  （MPS 把并发 kernel 压密→更少采样区间显示活动，却做更多功；同 PAR 下无 MPS sm% 反而更高但吞吐更低）。
+  真信号是吞吐：流水+MPS 最高。GPU 是绑定资源（单卡~86%），CPU 尚有余量（节点~57%）。
+- 流水把最优 PAR 从 64 降到 48（每 worker 更肥）——**更少进程、更高 util、0 失败 = 不浪费**。
+
+### D. 常驻/热进程池（`direct_feed_pool.py`）——证伪，默认关闭
+设计：只复用**进程**（免每集 spawn + 把 shutdown 挂死移出热路径），**每集全新 node+模型**（避 `if K is None` 内参陷阱与 SLAM 状态累积）。
+- **小闸门（3 集连跑）PASS**：池 vs 全新进程逐位一致，warm worker ~6.8s vs fresh ~9.4s（**~28% 更快/集**，远超预期）。
+- **但节点级实测证伪**（256 单元/48 worker/MPS）：
+  1. **不抬节点吞吐**：1.84M < 流水+MPS 稳态 1.95M——节点已 **GPU-bound**，池省下的 CPU 无处可用（warm 提速 ~28%/集是**延迟**收益，不在 GPU-bound 节点上兑现为吞吐）。
+  2. **48 路 + MPS 高并发下的可靠性下降**：一集在节点池中 `IndexError: index 16384 / size 512` + 另一 worker 段错误（rc=139）。**归因已隔离**：该集在①全新进程、②单 worker 顺序第 4 位（含该集，无 MPS）、③单 worker 连跑 12 集——**三种情形全部成功**。故崩溃**只在 48 路并发 + MPS 共享上下文的重压下出现**，属**MPS 高并发可靠性问题**，不是可复现的单进程跨集状态泄漏（历史 §4 那种）。但它仍是失败。
+  3. **失败爆炸半径更大**：worker 崩溃丢掉其整条 shard（5 集），fresh-process 只丢 1 集。
+- **裁决**：不抬吞吐（GPU-bound）+ 高并发+MPS 下引入失败且爆炸半径更大 → 违反"保正确率、不浪费资源"。**池默认关闭、作为负结果存档**，不接入生产路径。生产用 A+B（流水+MPS+每集全新进程）：拿到全部吞吐与 util 收益、失败半径最小（崩溃只丢 1 集）。
+
+### P2 净收益
+**1.61M → 1.95M 帧/时（+21%），单卡有效 GPU util >80%，0 失败，逐位正确**——用流水+MPS 达成；池经硬闸门证伪并安全回退。
+
 ## 7. DoD 勾稽
 
 - [x] 喂帧改为进程内同步、绕开 `sensor_msgs/Image` CDR + rclpy executor（核-秒 −34~36%、平均核 1.9→4.7 直证）
