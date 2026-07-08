@@ -1,0 +1,16 @@
+# PAR saturation sweep, h2 (jhhuang-h200-qinghua-2), 8 idle GPUs, 16GB /dev/shm, unique stride-1 domains.
+# Real utilization: cpu_busy_pct = 100 - mean(mpstat %idle); gpu_sm_pct = mean(nvidia-smi dmon sm%) whole-run.
+# (whole-run util is ramp+drain-diluted; steady-state values in steadystate.csv trim the tail.)
+# throughput_eph = ok*3600/wall_s. core_s_per_ep = cgroup CPU core-seconds / ok (real busy).
+# fail = fast crashes (executor ExternalShutdownException / DDS handshake), NOT 300s timeouts (verified) -> wall not inflated.
+par,n_eps,ok,fail,wall_s,throughput_eph,cpu_busy_whole,cpu_busy_steady,gpu_sm_whole,gpu_sm_steady,cpu_core_s,core_s_per_ep
+32,128,128,0,555.9,829,27.4,33.0,4.1,4.9,28980.2,226.4
+64,160,160,0,481.8,1196,39.4,50.3,6.0,7.5,35946.9,224.7
+80,200,197,3,744.2,953,32.1,47.5,4.8,6.9,45205.6,229.5
+96,200,196,4,753.9,936,33.2,50.8,5.0,7.2,47383.1,241.8
+#
+# KEY: peak at PAR=64 (1196 ep/hr, matches h1's historical 1188). PAR=80/96 REGRESS to 953/936 (-20%) + 3/4 crashes
+# -> PAR~64 is the true ceiling; oversubscription beyond hurts (MEASURED, not extrapolated; prior report's marginal-fit predicted knee ~67).
+# At the PAR=64 peak: steady-state real CPU-busy 50.3%, GPU sm% 7.5% -> NEITHER saturated -> NOT compute-bound (soft bottleneck confirmed).
+# whole-run util is ramp+drain-diluted (4x episode-size variance); steady = middle window trim (head 15%, tail 30%).
+# Cross-check: throughput/CPU-ceiling = 1196/(192*3600/224.7) = 38.9% ~ whole-run CPU-busy 39.4% (consistent).

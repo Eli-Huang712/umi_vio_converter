@@ -77,6 +77,56 @@
 
 ---
 
+## 1.5 时序与并发模型（谁和谁并行 / 串行）
+
+> §1 讲了"每步在哪跑"，但没讲"什么和什么同时发生"。这一节补上时序：
+> **核心结论——节点内部基本串行，靠跨进程流水线并行；节拍由 perception 的逐帧串行处理决定。**
+> 均据源码：`perception_node.py:156-157,256-268`（单 worker 线程）、`:709`（MultiThreadedExecutor）、
+> process() 内全是顺序 `await`（无 `asyncio.gather`）；`build_map_node.py:1250-1267`（SingleThreadedExecutor 单线程 while 循环）、`:707-717`（`_pace_to_timestamp` 只减速不加速）。
+
+| 层级 | 关系 | 依据 |
+|---|---|---|
+| 两腕（left / right） | **串行**（默认；`--build-parallel` 才并行） | 编排层 do_full |
+| 单腕内 3 进程（BagPlayer‖perception‖build_map 后端） | **并行**（流水线，**唯一真并行**） | 3 个独立 OS 进程 |
+| build_map 进程内 | **串行**（单线程，回放 ↔ 建图交替占用同一线程） | SingleThreadedExecutor |
+| perception 立体流水 | **串行**（单 worker，一次一帧；帧内步骤顺序 await，GPU 步骤不重叠） | stereo_queue(maxsize=1) + 单线程 |
+| perception IMU 摄取 | 与立体处理**并发**（但只加锁追加列表，极轻） | ReentrantCallbackGroup |
+| GPU 使用 | 每进程各自**串行**发 kernel；同腕两进程的 kernel 在同卡上交替（→ §4 GPU-context 争用来源） | — |
+
+<!-- TIMELINE_PLACEHOLDER -->
+
+**单腕内的流水线时间线**（示意；`P`=感知处理一帧，`M`=建图处理一个关键帧，`▸`=回放发帧）：
+
+```
+时间 ──────────────────────────────────────────────────────────►
+
+BagPlayer   │▸▸▸──▸▸────▸▸──────▸▸────  (发帧；被自己进程的 M 卡住时暂停，走走停停)
+(build_map  │        └── play_rate=20 想快，但下游跟不上 → sleep_s<0 从不触发，实际=消费速度
+ 线程①)     │
+            │        ┌─ 同进程单线程，M 跑时回放停 ─┐
+BuildMapNode│                  █M1████    █M2███     █M3███   (GPU 特征/匹配/嵌入 + 写库 + 位姿图)
+(build_map  │
+ 线程①，与▸交替)
+────────────┼───────────────────────────────────────────────
+perception  │  ██P1███████  ██P2███████  ██P3███████         (单 worker；一次一帧，帧内顺序:
+(worker线程)│     └ 深度→SP×2→LG→IMU积分→PnP→ISAM 全部顺序 await，GPU 步骤不重叠 ┘
+            │  ▲ 若 P 还在忙时新帧到达 → 排队帧被丢弃(§3) → 逐次丢不同帧 → 不可复现
+perception  │  ·imu·imu·imu·imu·imu·imu·imu·  (IMU 线程与 P 并发，仅加锁追加，极轻)
+(IMU线程)   │
+```
+
+**从这张图能读出的三件事：**
+
+1. **真正的并行只有"跨进程"这一层**：BagPlayer、perception worker、build_map 后端是 3 个并发进程。但**每个进程内部都是单线程串行**——build_map 的回放和建图抢同一个线程（M 在跑时▸暂停），perception 一次只处理一帧且帧内 GPU 步骤顺序 await 不重叠。
+2. **节拍 = perception 逐帧串行处理**：BagPlayer 想按 20× 发，但 perception 单 worker 消费不过来，`_pace_to_timestamp` 的 `sleep_s` 恒为负、从不生效 → 实际吞吐 = 最慢消费者。**play_rate=20 不是实际速度**；单腕 38.5s ≈ ~20s 固定启动 + ~16.6s 串行消费，与 play_rate 无关。
+3. **不可复现就发生在 P 的串行节拍上**：P 忙时到达的帧被 `stereo_queue(maxsize=1)` 丢弃，丢哪几帧取决于每个 P 的墙钟时长（§3）——这是"节点内串行 + 跨进程异步"共同的产物。
+
+**对优化的直接含义：**
+- 单腕内几乎没有可挖的并行度（各进程已单线程串行、GPU 步骤已顺序）——**提速要么靠并发更多"腕/集"填满 GPU（受 §4 GPU-context 争用限制），要么缩短 P 的串行链（属改 VIO，风险高）**。
+- 因此吞吐优化的正道仍是 §4/§5 的方向：**用 MPS 让多进程的 GPU kernel 真并发**（而非同卡时间片串行）、**横向加节点**、**存量走 BACKFILL**。
+
+---
+
 ## 2. CPU vs GPU 逐环节拆解
 
 > "算子在哪跑"直接决定瓶颈分析与优化手段。下表按流水线顺序，标注每个环节的**执行位置**。

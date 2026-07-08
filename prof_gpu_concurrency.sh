@@ -33,6 +33,10 @@ done
 export PYTHONPATH=/tinynav:${PYTHONPATH:-}
 ONE=/tinynav/tool/umi/_build_map_one_sensor.sh
 
+# NB: uses the first N size-sorted episodes, so different N use different episode
+# SETS (size mix varies) -> cross-N raw throughput carries episode-mix noise. The
+# CLEAN comparisons are: (a) MPS off-vs-on at the SAME N/episodes, (b) the sm%
+# engine-activity curve (episode-independent), (c) per-proc latency inflation.
 mapfile -t EPLIST < <(find "$EPS" -name episode.mcap 2>/dev/null | sort | head -n "$N")
 [ "${#EPLIST[@]}" -ge "$N" ] || { echo "need >=$N episodes, have ${#EPLIST[@]}"; exit 1; }
 
