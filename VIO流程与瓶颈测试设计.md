@@ -12,26 +12,51 @@
 
 一条 raw `.mcap` → `*_with_pose.mcap` 的转换，对**每只手腕**跑一遍下面的两进程流水线，
 两腕（left_wrist / right_wrist）默认**串行**，最后 merge 合并并加回触觉。
+每步右侧标注执行资源：**[CPU]** / **[GPU]** / **[IO]**（磁盘或 ROS/DDS 传输）。
 
 ```
-                    ┌─────────────────── build_map_node.py 进程 ───────────────────┐
- raw .mcap ───────► │  BagPlayer(SingleThreadedExecutor)                            │
- (H.264 视频        │    · 按 play_rate×实时 定速回放 bag                            │
-  + IMU + 内参)     │    · H.264 解码 → 发布原始 Image + IMU + /clock                │
-                    │  BuildMapNode                                                  │
-                    │    · 订阅感知输出的关键帧，建库/回环/位姿图/占据栅格           │
-                    └───────┬───────────────────────────────▲──────────────────────┘
-                            │ 原始图像/IMU (ROS topic)       │ 关键帧位姿 (/slam/*)
-                            ▼                                │
-                    ┌─────────────────── perception_node.py 进程 ──────────────────┐
-                    │  MultiThreadedExecutor（异步、多回调组）                       │
-                    │    · 立体同步 → 单线程 worker → process()：深度/特征/匹配/    │
-                    │      IMU 预积分 / gtsam 因子图优化 → 发布里程计与关键帧        │
-                    └───────────────────────────────────────────────────────────────┘
+ raw .mcap ─[IO 读]─► ┌──────────────────── build_map_node.py 进程 ────────────────────┐
+ (H.264 视频          │ BagPlayer (SingleThreadedExecutor) —— 定速喂数据                │
+  +IMU+内参)          │   1. 读 bag 下一条消息                              [IO 读]     │
+                      │   2. _pace_to_timestamp：sleep 到 play_rate 目标时刻 [CPU 空等] │
+                      │   3. H.264 解码 (PyAV decode) + cv2.cvtColor         [CPU]★重    │
+                      │   4. 发布 Image / IMU / /clock                       [IO: DDS]   │
+                      │ BuildMapNode (后端，逐关键帧)                                    │
+                      │   a. 关键帧特征 super_point_extractor.infer          [GPU]       │
+                      │   b. 关键帧匹配 light_glue_matcher.infer             [GPU]       │
+                      │   c. 检索嵌入 dinov2_model.infer                     [GPU]       │
+                      │   d. 建库写盘 TinyNavDB(features/embeddings/depths)  [CPU+IO 写]★│
+                      │   e. 回环检索 find_loop (numpy 余弦)                 [CPU]       │
+                      │   f. 位姿图优化 solve_pose_graph (gtsam ≤1024 迭代)  [CPU]★      │
+                      │   g. 占据栅格 generate_occupancy_map (raycast+SDF)   [CPU]       │
+                      │   h. save_mapping (np.save poses/内参/dbs)           [CPU+IO 写]★│
+                      └──────┬────────────────────────────────────▲─────────────────────┘
+              原始图像/IMU   │ [IO: ROS/DDS topic]                 │ 关键帧位姿 /slam/*
+                            ▼                                     │ [IO: ROS/DDS]
+                      ┌──────────────────── perception_node.py 进程 ───────────────────┐
+                      │ MultiThreadedExecutor（异步、多回调组）—— VSLAM 前端            │
+                      │   立体同步 ApproximateTimeSynchronizer(slop=0.02)    [CPU]       │
+                      │   stereo_queue(maxsize=1) + 单 worker 线程 (丢帧,§3) [CPU 调度]  │
+                      │   process() 每帧：                                              │
+                      │     · imgmsg_to_cv2 (cv_bridge Image→ndarray)        [CPU]       │
+                      │     · 立体深度 stereo_engine.infer (Retinify)        [GPU]       │
+                      │     · 视差滤波/掩码 (numpy)                          [CPU]       │
+                      │     · 特征提取 superpoint.infer ×2                   [GPU]       │
+                      │     · 特征匹配 light_glue.infer                      [GPU]       │
+                      │     · IMU 预积分 integrateMeasurement (gtsam)        [CPU]       │
+                      │     · PnP estimate_pose (numpy/cv2/gtsam)            [CPU]       │
+                      │     · 后端因子图 [ISAM Processing] (gtsam 非线性优化)[CPU]★      │
+                      │     · 发布里程计/关键帧 (ROS 序列化)                 [IO: DDS]    │
+                      └────────────────────────────────────────────────────────────────┘
                             │
-                            ▼  poses.npy （每腕一份）
- merge_sqlite_mcap.py ─────► *_with_pose.mcap  （原样拷贝所有话题 + 插入 TCP 位姿 + 触觉）
+                            ▼  poses.npy （每腕一份）                        [IO 写]
+ merge_sqlite_mcap.py ──► *_with_pose.mcap                                 [IO 读+写]
+   · 原样 CDR 拷贝所有话题 + 插入 TCP 位姿 + 触觉 (纯拷贝/序列化, ~0.1s)      [CPU+IO]
 ```
+
+> **★ = 每集耗时/资源的大头嫌疑**：CPU 侧的 H.264 解码(3)、shelve 建库写盘(d)、gtsam 位姿图/因子图优化(f, ISAM)、结果保存(h)。GPU 全是短小 TensorRT 推理（a/b/c 及前端 stereo/superpoint/lightglue）。哪几个 ★ 真占大头由火焰图定（§5.2）。
+>
+> **资源图例**：`[CPU]` 主机核心计算；`[GPU]` TensorRT 推理；`[IO 读/写]` 磁盘（`/data` LVM，实测每集读 88MB / 写 249MB）；`[IO: DDS]` 进程间 ROS2/FastDDS 传输（走共享内存 `/dev/shm`，本身也耗 CPU+内存带宽）。`[CPU 空等]` = 回放节流的 sleep，不占算力但占墙钟。
 
 **三个进程各自的角色：**
 

@@ -133,21 +133,44 @@ def chart_throughput_vs_par(indir, outdir, sweep_rows):
                         xytext=(0, 10), fontsize=8, color="green")
     savefig(fig, outdir, "2_throughput_vs_par.png")
 
+def _read_steadystate(indir):
+    """optional steadystate.csv from prof_steadystate.py -> {par: {...}}."""
+    import csv as _csv
+    p = os.path.join(indir, "steadystate.csv")
+    out = {}
+    if not os.path.isfile(p): return out
+    for row in _csv.DictReader(open(p)):
+        try: out[int(row["par"])] = {k: float(row[k]) for k in
+              ("cpu_busy_whole","cpu_busy_steady","gpu_sm_whole","gpu_sm_steady")}
+        except (KeyError, ValueError): pass
+    return out
+
 def chart_util_vs_par(indir, outdir, sweep_rows):
     pts = [(k, v) for k, v in _sweep_points(sweep_rows) if v["cpu"] is not None or v["gpu"] is not None]
     if not pts: print("skip util_vs_par: no measured real-utilization points"); return
+    ss = _read_steadystate(indir)
     par = [k for k, _ in pts]
-    cpu = [v["cpu"] for _, v in pts]
-    gpu = [v["gpu"] for _, v in pts]
-    fig, ax = plt.subplots(figsize=(9, 5.2))
-    ax.plot(par, cpu, "o-", color="#2ca02c", lw=2, label="real CPU %busy (100-mpstat %idle)")
-    ax.plot(par, gpu, "s-", color="#1f77b4", lw=2, label="real GPU engine active (dmon sm%)")
+    # whole-run (from sweep rows) and steady-state (from steadystate.csv if present)
+    cpu_w = [v["cpu"] for _, v in pts]
+    gpu_w = [v["gpu"] for _, v in pts]
+    cpu_s = [ss.get(k, {}).get("cpu_busy_steady") for k in par]
+    gpu_s = [ss.get(k, {}).get("gpu_sm_steady")  for k in par]
+    have_ss = any(x is not None for x in cpu_s)
+    fig, ax = plt.subplots(figsize=(9.2, 5.4))
+    if have_ss:
+        ax.plot(par, cpu_s, "o-", color="#2ca02c", lw=2.4, label="CPU %busy — steady-state")
+        ax.plot(par, gpu_s, "s-", color="#1f77b4", lw=2.4, label="GPU sm% — steady-state")
+        ax.plot(par, cpu_w, "o:", color="#2ca02c", lw=1, alpha=0.5, label="CPU %busy — whole-run (ramp-diluted)")
+        ax.plot(par, gpu_w, "s:", color="#1f77b4", lw=1, alpha=0.5, label="GPU sm% — whole-run (ramp-diluted)")
+    else:
+        ax.plot(par, cpu_w, "o-", color="#2ca02c", lw=2, label="real CPU %busy (100-mpstat %idle)")
+        ax.plot(par, gpu_w, "s-", color="#1f77b4", lw=2, label="real GPU engine active (dmon sm%)")
     ax.axhline(100, color="grey", ls=":", lw=0.8)
     ax.set_ylim(0, 105)
     ax.set_xlabel("PAR (concurrent episodes across 8 GPUs)")
     ax.set_ylabel("real utilization (%)")
-    ax.set_title("Real CPU-busy vs GPU-engine-active vs PAR (neither = loadavg/util)")
-    ax.legend(); ax.grid(alpha=0.3)
+    ax.set_title("Real CPU-busy vs GPU-engine-active vs PAR\n(neither is loadavg/util; steady-state trims ramp+drain)")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
     savefig(fig, outdir, "3_util_vs_par.png")
 
 def chart_stage_gantt(indir, outdir):
