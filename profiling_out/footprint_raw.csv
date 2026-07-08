@@ -1,0 +1,17 @@
+# 4A single-episode footprint, h2 (jhhuang-h200-qinghua-2), GPU0 idle, container CPU 192 cores no quota.
+# build_wall_s = 2-wrist SEQUENTIAL build_map bracket (cgroup cpu.stat + io.stat delta); merge_s separate.
+# C = CPU core-seconds over the 2-wrist bracket (real busy, cgroup usage_usec delta). mem_peak = per-proc GPU MiB.
+# gpu_busy_s here is the util-integral UPPER BOUND (0.5s sampling misses single-proc bursts) — real G comes from the saturated-GPU concurrency run.
+episode,size_mb,run,build_wall_s,merge_s,total_wall_s,cpu_core_s_C,gpu_util_peak_pct,gpu_mem_peak_mib
+021dedc2_small,26.5,1,68.9,2.5,71.4,140.9,12,2437
+021dedc2_small,26.5,2,65.9,2.5,68.4,136.3,12,2437
+021dedc2_small,26.5,3,66.2,2.5,68.7,137.5,12,2437
+0445c2d4_median,51.8,1,91.5,5.5,97.0,234.4,12,2437
+0445c2d4_median,51.8,2,91.1,4.5,95.6,232.7,12,2437
+0445c2d4_median,51.8,3,91.2,4.5,95.7,235.3,12,2437
+0c6d43d1_large,201.5,1,271.7,16.4,288.1,739.4,12,2437
+0c6d43d1_large,201.5,2,272.0,16.4,288.4,743.9,12,2437
+0c6d43d1_large,201.5,3,272.0,16.6,288.6,747.9,12,2437
+# MEDIANS (per episode): small C=137.5 wall=68.7 | median C=234.4 wall=95.7 | large C=743.9 wall=288.4
+# median-episode C=234.4 matches h1's 234.7 (cross-node reproducibility confirmed).
+# C scales ~linearly with frames/size: 26->52->201 MB gives C 137->234->744.
