@@ -91,6 +91,43 @@ rm -rf "${map_dir}" "${status_file}"
 : > "${build_log}"
 tmux kill-session -t "${session_name}" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# P1 direct-feed path (opt-in: UMI_DIRECT_FEED=1). ONE process decodes each
+# frame to numpy and feeds perception + build_map in-process/synchronously,
+# bypassing the two-process tmux + DDS Image-serialization path. VIO math is
+# unchanged. Wrapped in a `timeout` watchdog: there is no perception-subscriber
+# handshake to hang on here, but a wedged GPU/decoder must never hold the card
+# forever (handoff §8). Stock two-process path stays the default below.
+# ---------------------------------------------------------------------------
+if [[ "${UMI_DIRECT_FEED:-0}" == "1" ]]; then
+  driver="${repo_dir}/tool/umi/direct_feed_build_map.py"
+  timeout_sec="${UMI_BUILD_MAP_TIMEOUT_SEC:-600}"
+  echo "    mode: direct-feed (single process), timeout=${timeout_sec}s" >&2
+  echo "    build log: ${build_log}" >&2
+  # Isolate DDS: single-process direct feed has no cross-process topic traffic,
+  # but rclpy.init() still joins a domain and allocates /dev/shm segments. Pin a
+  # unique domain so parallel workers don't share discovery / shm.
+  if [[ -n "${ros_domain_id}" ]]; then
+    export ROS_DOMAIN_ID="${ros_domain_id}"
+  fi
+  set +e
+  timeout "${timeout_sec}" python3 "${driver}" \
+    --bag_file "${input_mcap}" --sensor "${sensor_name}" \
+    --map_save_path "${map_dir}" --no_verbose_timer > "${build_log}" 2>&1
+  st=$?
+  set -e
+  if [[ "${st}" == "124" ]]; then
+    echo "direct-feed timed out after ${timeout_sec}s for ${sensor_name}" >&2
+  fi
+  if [[ "${st}" != "0" ]]; then
+    echo "direct-feed build_map failed for ${sensor_name} (status=${st})" >&2
+    tail -n 60 "${build_log}" >&2 || true
+    exit "${st}"
+  fi
+  echo "    poses: ${map_dir}/poses.npy" >&2
+  exit 0
+fi
+
 rq="$(shell_quote "${repo_dir}")"
 iq="$(shell_quote "${input_mcap}")"
 mq="$(shell_quote "${map_dir}")"

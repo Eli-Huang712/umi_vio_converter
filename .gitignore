@@ -17,3 +17,5 @@ venv/
 *_with_pose.mcap/
 *.pre_tactile.bak/
 *.log
+.container_src/
+.wheelhouse/

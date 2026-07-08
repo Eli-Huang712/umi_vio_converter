@@ -7,6 +7,9 @@
 
 > **日常操作请看 [使用指南.md](使用指南.md)**（部署/单集/批量/验证/排错）；速度数据见 [BENCHMARK.md](BENCHMARK.md)。
 
+> **性能/吞吐**：瓶颈剖析结论见 [VIO转换瓶颈分析报告.md](VIO转换瓶颈分析报告.md)（真瓶颈 = build_map 单线程 ROS 图像序列化，非 GPU）；
+> 剖析全部脚本/图/数据在 [profiling/](profiling/)。当前 `feature/p1-direct-feed` 分支正实现 P1 提速，交接见 [P1_HANDOFF_PROMPT.md](P1_HANDOFF_PROMPT.md)。
+
 ## 做了什么（三处外科改动 + 新工具）
 - `patched/flatbuffer_codec.py` — 新增 `decode_tactile()` → `sensor_msgs/PointCloud2`
   （6×float32 `x,y,z,fx,fy,fz`，`width=25`，点字节零重排直拷）+ `vector_struct_bytes` 助手。

@@ -25,7 +25,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # files that OVERWRITE existing container files (need backup)
 OVERWRITE=(flatbuffer_codec.py flatbuffer_reader.py merge_sqlite_mcap.py)
 # brand-new files (no backup needed)
-NEWFILES=(backfill_tactile.py umi_vio_converter.py umi_vio_converter.sh _build_map_one_sensor.sh)
+NEWFILES=(backfill_tactile.py umi_vio_converter.py umi_vio_converter.sh _build_map_one_sensor.sh direct_feed_build_map.py)
 
 dex() { docker exec "${CONTAINER}" bash -lc "$*"; }
 
@@ -52,7 +52,7 @@ do_deploy() {
     docker cp "${SELF_DIR}/${f}" "${CONTAINER}:${DST}/${f}"
   done
   dex "chmod +x ${DST}/umi_vio_converter.sh ${DST}/_build_map_one_sensor.sh"
-  dex "python3 -c 'import ast,sys; [ast.parse(open(f).read()) for f in [\"${DST}/flatbuffer_codec.py\",\"${DST}/flatbuffer_reader.py\",\"${DST}/merge_sqlite_mcap.py\",\"${DST}/backfill_tactile.py\",\"${DST}/umi_vio_converter.py\"]]; print(\"syntax_ok\")'"
+  dex "python3 -c 'import ast,sys; [ast.parse(open(f).read()) for f in [\"${DST}/flatbuffer_codec.py\",\"${DST}/flatbuffer_reader.py\",\"${DST}/merge_sqlite_mcap.py\",\"${DST}/backfill_tactile.py\",\"${DST}/umi_vio_converter.py\",\"${DST}/direct_feed_build_map.py\"]]; print(\"syntax_ok\")'"
 
   echo
   echo "Deployed (live in container, NOT committed to :latest)."

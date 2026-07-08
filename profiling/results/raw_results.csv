@@ -1,0 +1,6 @@
+RESULT_ROW,n1,N=1,gpu=0,mps=,maxwall_s=34.3,med_proc_wall_s=34.3,gpu_busy_s=0.6,sm_avg_pct=2,sm_max_pct=7,wrists_per_hr=105
+RESULT_ROW,n2,N=2,gpu=0,mps=,maxwall_s=67.2,med_proc_wall_s=50.85,gpu_busy_s=1.5,sm_avg_pct=2,sm_max_pct=14,wrists_per_hr=107
+RESULT_ROW,n4,N=4,gpu=0,mps=,maxwall_s=67.3,med_proc_wall_s=42.05,gpu_busy_s=3.1,sm_avg_pct=5,sm_max_pct=50,wrists_per_hr=214
+RESULT_ROW,n6,N=6,gpu=0,mps=,maxwall_s=68.5,med_proc_wall_s=48.35,gpu_busy_s=4.6,sm_avg_pct=7,sm_max_pct=28,wrists_per_hr=315
+RESULT_ROW,n8,N=8,gpu=0,mps=,maxwall_s=68.4,med_proc_wall_s=48.05,gpu_busy_s=4.7,sm_avg_pct=7,sm_max_pct=27,wrists_per_hr=421
+RESULT_ROW,n8_mps,N=8,gpu=0,mps=on,maxwall_s=68.6,med_proc_wall_s=48,gpu_busy_s=4.5,sm_avg_pct=7,sm_max_pct=30,wrists_per_hr=420

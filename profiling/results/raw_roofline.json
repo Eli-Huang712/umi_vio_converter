@@ -1,0 +1,14 @@
+{
+  "observed_plateau_eph": 1196.0,
+  "cpu_ceiling_eph": 2949,
+  "gpu_ceiling_eph": 24000,
+  "io_ceiling_eph": 66506,
+  "_inputs": {
+    "cores": 192.0,
+    "C_core_s_per_ep": 234.4,
+    "ngpu": 8.0,
+    "gpu_sec_per_ep": 1.2,
+    "disk_write_mbps": 4600.0,
+    "write_mb_per_ep": 249.0
+  }
+}
