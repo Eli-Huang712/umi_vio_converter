@@ -1,4 +1,0 @@
-SWEEP_ROW,par=32,n_eps=128,ok=128,fail=0,wall_s=555.9,throughput_eph=829,cpu_busy_pct=27.4,gpu_sm_pct=4.1,cpu_core_s=28980.2,core_s_per_ep=226.4
-SWEEP_ROW,par=64,n_eps=160,ok=160,fail=0,wall_s=481.8,throughput_eph=1196,cpu_busy_pct=39.4,gpu_sm_pct=6.0,cpu_core_s=35946.9,core_s_per_ep=224.7
-SWEEP_ROW,par=80,n_eps=200,ok=197,fail=3,wall_s=744.2,throughput_eph=953,cpu_busy_pct=32.1,gpu_sm_pct=4.8,cpu_core_s=45205.6,core_s_per_ep=229.5
-SWEEP_ROW,par=96,n_eps=200,ok=196,fail=4,wall_s=753.9,throughput_eph=936,cpu_busy_pct=33.2,gpu_sm_pct=5.0,cpu_core_s=47383.1,core_s_per_ep=241.8

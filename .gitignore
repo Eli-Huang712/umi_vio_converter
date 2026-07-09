@@ -19,3 +19,13 @@ venv/
 *.log
 .container_src/
 .wheelhouse/
+
+# --- delivery branch: exclude experimental & process artifacts ---
+# (kept on other branches; ignored here so a delivery checkout stays clean)
+profiling/
+direct_feed_pool.py
+P1_HANDOFF_PROMPT.md
+P1_IMPLEMENTATION.md
+VIO转换瓶颈分析报告.md
+DESIGN.md
+BENCHMARK.md

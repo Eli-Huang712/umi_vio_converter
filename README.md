@@ -3,12 +3,10 @@
 单集 UMI VIO 转换器：对 tinynav 工作流做**手术刀级别**改动，让 `*_with_pose.mcap`
 原生带上触觉，位姿按传感器可开关，且对已有产物**只补差、不重跑 VIO**。
 
-设计细节见 [DESIGN.md](DESIGN.md)。
+> **日常操作请看 [使用指南.md](使用指南.md)**（部署/单集/批量/验证/排错）。
 
-> **日常操作请看 [使用指南.md](使用指南.md)**（部署/单集/批量/验证/排错）；速度数据见 [BENCHMARK.md](BENCHMARK.md)。
-
-> **性能/吞吐**：瓶颈剖析结论见 [VIO转换瓶颈分析报告.md](VIO转换瓶颈分析报告.md)（真瓶颈 = build_map 单线程 ROS 图像序列化，非 GPU）；
-> 剖析全部脚本/图/数据在 [profiling/](profiling/)。当前 `feature/p1-direct-feed` 分支正实现 P1 提速，交接见 [P1_HANDOFF_PROMPT.md](P1_HANDOFF_PROMPT.md)。
+> **性能/吞吐**：完整加速方案（瓶颈剖析 → direct-feed → 流水化解码 + MPS，600K→1.95M 帧/时 = 3.25×）
+> 及换卡调参方法见 [VIO转换加速技术报告.md](VIO转换加速技术报告.md)。
 
 ## 做了什么（三处外科改动 + 新工具）
 - `patched/flatbuffer_codec.py` — 新增 `decode_tactile()` → `sensor_msgs/PointCloud2`
