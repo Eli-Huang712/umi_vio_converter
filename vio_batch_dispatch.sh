@@ -55,11 +55,12 @@ run_one() {
     # dirname ep = $RAW_ROOT/<subset>/<hash>; dirname out = $VIO_ROOT/<subset>/<hash>
     local sj; sj=$(ls "$(dirname "$ep")"/*.json 2>/dev/null | head -1)
     [ -n "$sj" ] && cp -p "$sj" "$(dirname "$out")/" 2>/dev/null
-    # remove the raw-tree scratch (guarded: must be <RAW_ROOT>/*/episode)
-    case "$scratch" in
-      "$RAW_ROOT"/*/episode) [ -d "$scratch" ] && rm -rf "$scratch" ;;
-    esac
   fi
+  # ALWAYS remove the raw-tree build scratch (guarded: must be <RAW_ROOT>/*/episode)
+  # — unconditional so a FAILED episode never leaves residue nested in the source.
+  case "$scratch" in
+    "$RAW_ROOT"/*/episode) [ -d "$scratch" ] && rm -rf "$scratch" ;;
+  esac
   local t1; t1=$(date +%s)
   printf '%s\t%d\t%d\t%s\n' "$(date +%s)" "$rc" "$((t1-t0))" "$ep" >> "$RESULTS"
 }
