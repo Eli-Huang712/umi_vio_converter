@@ -1,0 +1,10 @@
+.git
+.gitignore
+.DS_Store
+__pycache__/
+*.py[cod]
+*.mcap
+*_with_pose.mcap/
+_vio_logs/
+*.log
+*.tmp

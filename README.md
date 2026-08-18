@@ -43,6 +43,10 @@ The installer copies exactly the files listed in [`runtime_files.tsv`](runtime_f
 sets deterministic permissions, and performs Shell/Python syntax validation. It does not
 install system, ROS, CUDA or Python dependencies.
 
+If no ready-to-use image is available, follow
+[`docs/DOCKER.md`](docs/DOCKER.md) to prepare a compatible TinyNav base image, add this
+repository as an overlay, mount data, and validate the resulting container.
+
 `/tinynav` is the default TinyNav root. Set `TINYNAV_ROOT` only when the compatible
 runtime is installed elsewhere. Runtime helpers call each other relative to their
 installed directory, so the tool directory itself may be relocated.
@@ -127,6 +131,7 @@ src/umi_vio_converter/
   merge_sqlite_mcap.py        pose/tactile MCAP merge
   backfill_tactile.py         tactile-only backfill
   verify_tactile.py           raw/output tactile inspection
+docker/Dockerfile             generic TinyNav-base overlay image
 docs/                         usage and architecture documentation
 runtime_files.tsv             source-to-runtime installation manifest
 ```
