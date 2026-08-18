@@ -19,12 +19,12 @@ raw FlatBuffer MCAP
 
 ### 1.1 双目视觉给出几何尺度
 
-对一个传感器在时刻 $t$ 的左右图像 $I_t^L,I_t^R$，先按照时间戳配成立体帧。当前
+对一个传感器在时刻 $t$ 的左右图像 $I_{t}^{L},I_{t}^{R}$，先按照时间戳配成立体帧。当前
 实现为每个左帧寻找时间差不超过 20 ms 的最近右帧：
 
 $$
-j^*(i)=\arg\min_j |t_i^L-t_j^R|,
-\qquad |t_i^L-t_{j^*}^R|\le 0.02\ \mathrm{s}.
+j^{\star}(i)=\arg\min_{j} |t_{i}^{L}-t_{j}^{R}|,
+\qquad |t_{i}^{L}-t_{j^{\star}}^{R}|\le 0.02\ \mathrm{s}.
 $$
 
 对应代码是
@@ -54,8 +54,8 @@ $$
 并对角速度、线加速度以及 $3\times3$ covariance 同时应用该旋转，见
 [`rotate_imu_inplace()`](src/umi_vio_converter/direct_feed_build_map.py)。
 
-处理时刻为 $T$ 的双目帧前，调度器会依次送入所有 $t_{imu}\le T$ 的测量，再送入第一条
-$t_{imu}>T$ 的测量。这个 1-step look-ahead 让 TinyNav 能把最后一段 IMU 积分精确截到
+处理时刻为 $T$ 的双目帧前，调度器会依次送入所有 $t_{\mathrm{imu}}\le T$ 的测量，再送入第一条
+$t_{\mathrm{imu}}>T$ 的测量。这个 1-step look-ahead 让 TinyNav 能把最后一段 IMU 积分精确截到
 图像时间，而不是因缺少跨越 $T$ 的采样而少积分一段。
 
 双目 VIO 调用按代码中的 0.1333 s 间隔节流，约为 7.5 Hz；IMU 不随图像节流，仍按
@@ -64,27 +64,27 @@ $t_{imu}>T$ 的测量。这个 1-step look-ahead 让 TinyNav 能把最后一段 
 ### 1.3 VIO 状态与优化目标
 
 TinyNav 先在相邻关键帧提取并匹配特征，再利用当前帧深度进行几何位姿估计，得到
-相对运动 ${}^{C_{k-1}}T_{C_k}$。它给新状态提供初值：
+相对运动 ${}^{C_{k-1}}T_{C_{k}}$。它给新状态提供初值：
 
 $$
-{}^{W}T_{C_k}^{init}={}^{W}T_{C_{k-1}}\,{}^{C_{k-1}}T_{C_k}.
+{}^{W}T_{C_{k}}^{\mathrm{init}}={}^{W}T_{C_{k-1}}\,{}^{C_{k-1}}T_{C_{k}}.
 $$
 
 每个关键帧的核心状态可以写成
 
 $$
-\mathcal X_k=\left({}^{W}T_{C_k},\ v_k,\ b_k\right),
+\mathcal{X}_{k}=\left({}^{W}T_{C_{k}},\ v_{k},\ b_{k}\right),
 $$
 
-其中 ${}^{W}T_{C_k}\in SE(3)$ 是相机在 VIO 世界坐标系中的位姿，$v_k$ 是速度，$b_k$
+其中 ${}^{W}T_{C_{k}}\in SE(3)$ 是相机在 VIO 世界坐标系中的位姿，$v_{k}$ 是速度，$b_{k}$
 是 IMU bias。兼容 TinyNav core 将帧间 IMU 预积分、双目特征投影约束和先验放进因子图，
 求解形式可概括为
 
 $$
-\min_{\{T_k,v_k,b_k\}}
-\sum_k\|r^{imu}_{k,k+1}\|^2_{\Sigma_{imu}^{-1}}
-+\sum_j\|r^{stereo}_j\|^2_{\Sigma_{pixel}^{-1}}
-+\sum_k\|r^{prior}_k\|^2.
+\min_{\{T_{k},v_{k},b_{k}\}}
+\sum_{k}\|r^{\mathrm{imu}}_{k,k+1}\|^{2}_{\Sigma_{\mathrm{imu}}^{-1}}
++\sum_{j}\|r^{\mathrm{stereo}}_{j}\|^{2}_{\Sigma_{\mathrm{pixel}}^{-1}}
++\sum_{k}\|r^{\mathrm{prior}}_{k}\|^{2}.
 $$
 
 具体残差、噪声参数和优化器实现在外部
@@ -97,12 +97,12 @@ $$
 
 ### 1.4 从相机位姿变成机器人 TCP 位姿
 
-TinyNav 输出的是 ${}^{W}T_C$。对左右手腕，本仓库在
+TinyNav 输出的是 ${}^{W}T_{C}$。对左右手腕，本仓库在
 [`merge_sqlite_mcap.py`](src/umi_vio_converter/merge_sqlite_mcap.py) 中右乘 UMI 手眼
 外参：
 
 $$
-{}^{W}T_{TCP}={}^{W}T_C\,{}^{C}T_{TCP},
+{}^{W}T_{TCP}={}^{W}T_{C}\,{}^{C}T_{TCP},
 $$
 
 $$
@@ -204,8 +204,8 @@ pipeline 与 decode-all 路径在 6 个“episode × wrist”样本上 `poses.np
 在飞。每个 slot 获得：
 
 $$
-GPU(slot)=GPUS[slot\bmod N_{gpu}],\qquad
-ROS\_DOMAIN\_ID=DBASE+slot.
+\mathrm{GPU}(s)=\mathrm{GPUS}[s\bmod N_{\mathrm{gpu}}],\qquad
+\mathrm{ROS\_DOMAIN\_ID}=\mathrm{DBASE}+s.
 $$
 
 它还提供单集 timeout、失败重试、独立日志、源目录 scratch 清理和最终非零退出码。
