@@ -9,7 +9,7 @@ selected GPU indices are visible and idle.
 ## 2. Install
 
 ```bash
-bash install.sh /tinynav/tool/umi
+bash scripts/install.sh /tinynav/tool/umi
 ```
 
 All runtime files are installed into one directory because the converter resolves its

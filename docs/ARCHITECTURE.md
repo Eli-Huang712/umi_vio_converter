@@ -2,17 +2,21 @@
 
 ## Execution flow
 
+The paths below show repository ownership. `scripts/install.sh` copies the listed runtime
+files into one flat tool directory (normally `/tinynav/tool/umi`), where the actual calls
+resolve helpers next to one another.
+
 ```text
-convert.sh
-  -> vio_batch_dispatch.sh
-    -> umi_vio_converter.sh
-      -> umi_vio_converter.py
-        -> _build_map_one_sensor.sh
-          -> direct_feed_build_map.py
+scripts/convert.sh
+  -> scripts/vio_batch_dispatch.sh
+    -> scripts/umi_vio_converter.sh
+      -> src/umi_vio_converter/umi_vio_converter.py
+        -> scripts/_build_map_one_sensor.sh
+          -> src/umi_vio_converter/direct_feed_build_map.py
             -> tinynav.core.perception_node       (external)
             -> tinynav.core.build_map_node        (external)
-        -> patched/merge_sqlite_mcap.py
-        -> backfill_tactile.py                     (BACKFILL only)
+        -> src/umi_vio_converter/merge_sqlite_mcap.py
+        -> src/umi_vio_converter/backfill_tactile.py  (BACKFILL only)
 ```
 
 ## Repository ownership
@@ -37,7 +41,7 @@ standalone, hardware-independent VIO package.
 
 ## Per-episode state machine
 
-`umi_vio_converter.py` selects an action from output state:
+`src/umi_vio_converter/umi_vio_converter.py` selects an action from output state:
 
 ```text
 missing metadata.yaml        -> FULL

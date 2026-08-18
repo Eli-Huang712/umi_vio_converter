@@ -36,7 +36,7 @@ deliberately not distributed here.
 Run this inside the TinyNav environment, or copy the repository into the container first:
 
 ```bash
-bash install.sh /tinynav/tool/umi
+bash scripts/install.sh /tinynav/tool/umi
 ```
 
 The installer copies exactly the files listed in [`runtime_files.tsv`](runtime_files.tsv),
@@ -110,16 +110,23 @@ bash /tinynav/tool/umi/umi_vio_converter.sh \
 See [docs/USAGE.md](docs/USAGE.md) for operational details and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for code ownership and external boundaries.
 
-## Source layout
+## Repository layout
 
 ```text
-convert.sh                    directory entrypoint
-vio_batch_dispatch.sh         concurrency, GPU and ROS-domain dispatcher
-umi_vio_converter.sh          ROS environment wrapper
-umi_vio_converter.py          FULL/BACKFILL/SKIP orchestrator
-_build_map_one_sensor.sh      one-sensor VIO launcher
-direct_feed_build_map.py      in-process video/IMU feed into TinyNav
-patched/                      FlatBuffer decode and MCAP merge patches
-backfill_tactile.py           tactile-only backfill
-verify_tactile.py             raw/output tactile-count inspection
+scripts/
+  install.sh                  install the runtime files
+  convert.sh                  directory conversion entrypoint
+  vio_batch_dispatch.sh       concurrency, GPU and ROS-domain dispatcher
+  umi_vio_converter.sh        ROS environment wrapper
+  _build_map_one_sensor.sh    one-sensor VIO launcher
+  *.sh                        batch and maintenance helpers
+src/umi_vio_converter/
+  umi_vio_converter.py        FULL/BACKFILL/SKIP orchestrator
+  direct_feed_build_map.py    in-process video/IMU feed into TinyNav
+  flatbuffer_*.py             UMI FlatBuffer decoders
+  merge_sqlite_mcap.py        pose/tactile MCAP merge
+  backfill_tactile.py         tactile-only backfill
+  verify_tactile.py           raw/output tactile inspection
+docs/                         usage and architecture documentation
+runtime_files.tsv             source-to-runtime installation manifest
 ```
