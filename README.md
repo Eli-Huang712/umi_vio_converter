@@ -201,12 +201,12 @@ pipeline 与 decode-all 路径在 6 个“episode × wrist”样本上 `poses.np
 ### 3.4 节点级并发：持续队列而不是一次性起一批进程
 
 [`vio_batch_dispatch.sh`](scripts/vio_batch_dispatch.sh) 保持恰好 `PAR` 个 episode
-在飞。每个 slot 获得：
+在飞。第 `slot` 个任务的资源分配规则为：
 
-$$
-\mathrm{GPU}(s)=\mathrm{GPUS}[s\bmod N_{\mathrm{gpu}}],\qquad
-\mathrm{ROS\_DOMAIN\_ID}=\mathrm{DBASE}+s.
-$$
+```text
+GPU             = GPUS[slot % len(GPUS)]
+ROS_DOMAIN_ID   = DBASE + slot
+```
 
 它还提供单集 timeout、失败重试、独立日志、源目录 scratch 清理和最终非零退出码。
 `DBASE + PAR` 必须不超过 232。
