@@ -2,18 +2,20 @@
 set -euo pipefail
 
 # =============================================================================
-# umi_vio_converter.sh — devcontainer entrypoint for umi_vio_converter.py.
+# umi_vio_converter.sh — TinyNav runtime entrypoint for umi_vio_converter.py.
 #
-# Sources ROS overlays + ensures python-mcap (mirrors container_all_in_one_parallel.sh),
-# then execs the Python orchestrator. Point the batch driver's
-# VIO_RUNNER_IN_CONTAINER at this script to get tactile + 3-way auto-dispatch.
+# Sources ROS overlays, checks python-mcap, then execs the Python orchestrator.
 #
 # Usage (inside container):
 #   bash tool/umi/umi_vio_converter.sh <input.mcap> [--pose-sensors ...] [--mode auto|full|backfill|check] ...
 # =============================================================================
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SELF_DIR}/../.." && pwd)"
+TINYNAV_ROOT="${TINYNAV_ROOT:-/tinynav}"
+[[ -d "${TINYNAV_ROOT}" ]] || {
+  echo "TinyNav root not found: ${TINYNAV_ROOT}" >&2
+  exit 1
+}
 
 source_devcontainer_setup() {
   set +u
@@ -27,22 +29,15 @@ source_devcontainer_setup() {
   set -u
 }
 
-ensure_python_mcap() {
-  if python3 -c "import mcap" >/dev/null 2>&1; then
-    return 0
-  fi
-  local wheel_dir="/data/vendor_wheels"
-  if [[ -d "${wheel_dir}" ]]; then
-    echo "Installing python mcap from ${wheel_dir}" >&2
-    python3 -m pip install --no-index --find-links "${wheel_dir}" mcap >&2
-  else
-    echo "python-mcap missing and ${wheel_dir} not found" >&2
+require_python_mcap() {
+  python3 -c "import mcap" >/dev/null 2>&1 || {
+    echo "python-mcap is required; install dependencies in the runtime image before conversion" >&2
     exit 1
-  fi
+  }
 }
 
 source_devcontainer_setup
-ensure_python_mcap
+require_python_mcap
 
-cd "${REPO_DIR}"
+cd "${TINYNAV_ROOT}"
 exec python3 "${SELF_DIR}/umi_vio_converter.py" "$@"

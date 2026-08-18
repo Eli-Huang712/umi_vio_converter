@@ -1,0 +1,16 @@
+# source_path<TAB>destination_basename<TAB>mode
+patched/flatbuffer_codec.py	flatbuffer_codec.py	0644
+patched/flatbuffer_reader.py	flatbuffer_reader.py	0644
+patched/merge_sqlite_mcap.py	merge_sqlite_mcap.py	0644
+backfill_tactile.py	backfill_tactile.py	0644
+umi_vio_converter.py	umi_vio_converter.py	0644
+direct_feed_build_map.py	direct_feed_build_map.py	0644
+verify_tactile.py	verify_tactile.py	0755
+umi_vio_converter.sh	umi_vio_converter.sh	0755
+_build_map_one_sensor.sh	_build_map_one_sensor.sh	0755
+convert.sh	convert.sh	0755
+vio_batch_dispatch.sh	vio_batch_dispatch.sh	0755
+failed_manifest.sh	failed_manifest.sh	0755
+batch_backfill.sh	batch_backfill.sh	0755
+backfill_sidecar_json.sh	backfill_sidecar_json.sh	0755
+clean_raw_scratch.sh	clean_raw_scratch.sh	0755

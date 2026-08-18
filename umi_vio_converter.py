@@ -19,6 +19,7 @@ ROS overlays are sourced and python-mcap is present before this runs.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -29,8 +30,8 @@ _TACT_RE = re.compile(r"^/observation/tactile_\w+/tactile/tactile_point_cloud2$"
 SUPPORTED_SENSORS = ("left_wrist", "right_wrist", "head")
 EXPERIMENTAL_SENSORS = ("head",)
 
-SELF_DIR = Path(__file__).resolve().parent          # /tinynav/tool/umi
-REPO_DIR = SELF_DIR.parent.parent                   # /tinynav
+SELF_DIR = Path(__file__).resolve().parent
+REPO_DIR = Path(os.environ.get("TINYNAV_ROOT", "/tinynav")).resolve()
 ONE_SENSOR_SH = SELF_DIR / "_build_map_one_sensor.sh"
 MERGE_PY = SELF_DIR / "merge_sqlite_mcap.py"
 BACKFILL_PY = SELF_DIR / "backfill_tactile.py"

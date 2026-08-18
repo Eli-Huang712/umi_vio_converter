@@ -5,15 +5,15 @@ __pycache__/
 .venv/
 venv/
 
-# macOS
+# Editors and OS
 .DS_Store
-
-# Editor
-.vscode/
 .idea/
+.vscode/
 
-# Local scratch / benchmark artifacts (never commit data or products)
+# Local data and runtime artifacts
 *.mcap
 *_with_pose.mcap/
 *.pre_tactile.bak/
 *.log
+*.tmp
+_vio_logs/

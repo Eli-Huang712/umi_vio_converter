@@ -9,13 +9,13 @@
 # 用法（容器内）：
 #   PAR=32 bash tool/umi/batch_backfill.sh <根目录> [episode.mcap 的相对 glob]
 #
-# 例：plant_collection（raw = <hash>/episode.mcap）
+# 例：raw = <hash>/episode.mcap
 #   PAR=32 bash tool/umi/batch_backfill.sh \
-#       /data/plant_collection/raw/26-06-23/dataloop-umi/184
+#       /data/raw
 #
-# 例：pick_tiny_objects（raw = <hash>/<hash>.mcap）
+# 例：raw = <hash>/<hash>.mcap
 #   PAR=32 RAW_GLOB='*/*.mcap' bash tool/umi/batch_backfill.sh \
-#       /data/pick_tiny_objects/vio_todo
+#       /data/raw
 #
 # 环境变量：
 #   PAR        并行 worker 数（默认 32；补触觉是 CPU/IO 型，32 在 192 核上很轻松）
